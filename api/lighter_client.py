@@ -7,6 +7,7 @@ import itertools
 import json
 import os
 import platform
+import hashlib
 import threading
 import time
 from decimal import Decimal, InvalidOperation, ROUND_DOWN
@@ -26,21 +27,27 @@ DEFAULT_SYMBOL_OVERRIDES: Dict[str, Dict[str, Any]] = {
 }
 
 _MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
-_DEFAULT_SIGNER_SEARCH_PATHS = [
-    os.path.join(_MODULE_DIR, "signers"),
-    os.path.join(os.path.dirname(_MODULE_DIR), "external", "lighter-python", "lighter", "signers"),
-    os.path.join(os.path.dirname(_MODULE_DIR), "Signer", "Lighter"),
-    os.path.join(os.path.dirname(_MODULE_DIR), "Signer", "lighter"),
-]
+_PROJECT_ROOT = os.path.dirname(_MODULE_DIR)
+_CONTROLLED_SIGNER_DIR = os.path.join(_PROJECT_ROOT, "Signer", "Lighter")
+_DEFAULT_SIGNER_SEARCH_PATHS = [_CONTROLLED_SIGNER_DIR]
 _SIGNER_FILENAMES = {
     ("windows", "amd64"): ["lighter-signer-windows-amd64.dll"],
     ("windows", "x86_64"): ["lighter-signer-windows-amd64.dll"],
     ("linux", "x86_64"): ["lighter-signer-linux-amd64.so"],
     ("linux", "amd64"): ["lighter-signer-linux-amd64.so"],
     ("linux", "arm64"): ["lighter-signer-linux-arm64.so"],
-    ("linux", "aarch64"): ["lighter-signer-linux-arm64.so"],  # ARM64 on Linux uses aarch64
+    ("linux", "aarch64"): ["lighter-signer-linux-arm64.so"],
     ("darwin", "arm64"): ["lighter-signer-darwin-arm64.dylib"],
     ("darwin", "aarch64"): ["lighter-signer-darwin-arm64.dylib"],
+}
+
+_SIGNER_HASHES = {
+    ("darwin", "arm64"): {
+        "lighter-signer-darwin-arm64.dylib": "8064b845731feffa1c3a491b96e5c5ec99f1c8be4d226dc278735209c2420715",
+    },
+    ("darwin", "aarch64"): {
+        "lighter-signer-darwin-arm64.dylib": "8064b845731feffa1c3a491b96e5c5ec99f1c8be4d226dc278735209c2420715",
+    },
 }
 
 
@@ -127,32 +134,36 @@ class SimpleSignerClient:
         if not filenames:
             raise SimpleSignerError(f"Unsupported platform/architecture: {system}/{arch}")
 
-        # 確保 filenames 是列表格式
         if isinstance(filenames, str):
             filenames = [filenames]
 
+        expected_hashes = _SIGNER_HASHES.get((system, arch))
+        if not expected_hashes:
+            raise SimpleSignerError("Signer hash whitelist missing for this platform")
+
         search_paths: List[str] = []
         if signer_dir:
-            search_paths.append(signer_dir)
-        search_paths.extend(_DEFAULT_SIGNER_SEARCH_PATHS)
+            dir_norm = os.path.abspath(signer_dir)
+            if not dir_norm.startswith(os.path.abspath(_CONTROLLED_SIGNER_DIR)):
+                raise SimpleSignerError("Signer directory not allowed")
+            search_paths.append(dir_norm)
+        else:
+            search_paths.extend(_DEFAULT_SIGNER_SEARCH_PATHS)
 
-        # 嘗試所有搜索路徑和文件名組合
         for candidate_dir in search_paths:
-            if not candidate_dir:
-                continue
             for filename in filenames:
                 candidate = os.path.join(candidate_dir, filename)
                 if os.path.isfile(candidate):
-                    logger.info(f"Found Lighter signer library: {candidate}")
+                    h = hashlib.sha256()
+                    with open(candidate, "rb") as f:
+                        for chunk in iter(lambda: f.read(8192), b""):
+                            h.update(chunk)
+                    digest = h.hexdigest()
+                    if expected_hashes.get(filename) != digest:
+                        raise SimpleSignerError("Signer library hash mismatch")
                     return ctypes.CDLL(candidate)
 
-        # 如果找不到任何文件，提供詳細的錯誤信息
-        filenames_str = "', '".join(filenames)
-        raise SimpleSignerError(
-            f"Unable to locate signer library. Tried filenames: '{filenames_str}'. "
-            f"Searched in: {search_paths}. "
-            "Set `signer_lib_dir` in config or place the library under api/signers/ or Signer/lighter/."
-        )
+        raise SimpleSignerError("Signer library not found in controlled directory")
 
     def _configure_library(self) -> None:
         self.signer.CreateClient.argtypes = [
@@ -545,8 +556,14 @@ def _get_lihgter_account_index(address):
     url = 'https://mainnet.zklighter.elliot.ai/api/v1/account?by=l1_address&value='
     full_url = url + checksum_address
 
-    res = requests.get(full_url)
-    data = res.json()
+    try:
+        res = requests.get(full_url, timeout=5)
+    except requests.RequestException as exc:
+        raise ValueError(f"Failed to fetch account index: {exc}")
+    try:
+        data = res.json()
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid response when fetching account index: {exc}")
 
     # 提取 account_index
     if 'accounts' in data:

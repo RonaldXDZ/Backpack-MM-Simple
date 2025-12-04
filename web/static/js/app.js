@@ -723,15 +723,20 @@ function addLog(message, type = 'info') {
     const timestamp = new Date().toLocaleTimeString('zh-TW');
     const logEntry = document.createElement('div');
     logEntry.className = `log-entry ${type}`;
-    logEntry.innerHTML = `
-        <span class="log-timestamp">[${timestamp}]</span>
-        <span>${message}</span>
-    `;
+
+    const tsSpan = document.createElement('span');
+    tsSpan.className = 'log-timestamp';
+    tsSpan.textContent = `[${timestamp}]`;
+
+    const msgSpan = document.createElement('span');
+    msgSpan.textContent = String(message || '');
+
+    logEntry.appendChild(tsSpan);
+    logEntry.appendChild(msgSpan);
 
     logDisplay.appendChild(logEntry);
     logDisplay.scrollTop = logDisplay.scrollHeight;
 
-    // 限制日誌條目數量
     while (logDisplay.children.length > 100) {
         logDisplay.removeChild(logDisplay.firstChild);
     }

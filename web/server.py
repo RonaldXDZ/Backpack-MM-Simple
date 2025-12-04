@@ -17,6 +17,7 @@ from datetime import datetime
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from logger import setup_logger
+from functools import wraps
 
 logger = setup_logger("web_server")
 
@@ -25,16 +26,35 @@ app = Flask(__name__,
             static_folder=os.path.join(os.path.dirname(__file__), 'static'))
 app.config['SECRET_KEY'] = os.urandom(24)
 
+# 管理员令牌
+ADMIN_TOKEN = os.getenv('ADMIN_TOKEN')
+
 # 配置SocketIO以提高連接穩定性
 socketio = SocketIO(
     app,
-    cors_allowed_origins="*",
+    cors_allowed_origins=None,
     ping_timeout=60,
     ping_interval=25,
     async_mode='threading',
     logger=False,
     engineio_logger=False
 )
+
+
+def require_auth(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        token = ADMIN_TOKEN
+        auth_header = request.headers.get('Authorization', '')
+        if not token:
+            return jsonify({'success': False, 'message': '未配置管理令牌'}), 401
+        if not auth_header.startswith('Bearer '):
+            return jsonify({'success': False, 'message': '未授权'}), 401
+        provided = auth_header.split(' ', 1)[1].strip()
+        if provided != token:
+            return jsonify({'success': False, 'message': '令牌无效'}), 401
+        return func(*args, **kwargs)
+    return wrapper
 
 # 全局狀態
 bot_status = {
@@ -77,6 +97,7 @@ def get_status():
 
 
 @app.route('/api/start', methods=['POST'])
+@require_auth
 def start_bot():
     """啟動做市機器人"""
     global current_strategy, strategy_thread, bot_status, last_stats, balance_cache
@@ -402,6 +423,7 @@ def start_bot():
 
 
 @app.route('/api/stop', methods=['POST'])
+@require_auth
 def stop_bot():
     """停止做市機器人"""
     global current_strategy, bot_status, strategy_thread
@@ -932,7 +954,7 @@ def run_server(host='0.0.0.0', port=5000, debug=False):
 
     logger.info(f"啟動Web服務器於 http://{host}:{port}")
     logger.info(f"調試模式: {'開啟' if debug else '關閉'}")
-    socketio.run(app, host=host, port=port, debug=debug, allow_unsafe_werkzeug=True)
+    socketio.run(app, host=host, port=port, debug=debug, allow_unsafe_werkzeug=bool(debug))
 
 
 if __name__ == '__main__':

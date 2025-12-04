@@ -36,8 +36,9 @@ def get_proxy_config() -> Dict[str, str]:
         proxies['https'] = https_proxy
 
     if proxies:
-        logger.info(f"已從環境變量讀取代理配置: HTTP={'http' in proxies}, HTTPS={'https' in proxies}")
-        logger.debug(f"代理配置詳情: {proxies}")
+        http_enabled = 'http' in proxies
+        https_enabled = 'https' in proxies
+        logger.info(f"已從環境變量讀取代理配置: HTTP={http_enabled}, HTTPS={https_enabled}")
     else:
         logger.debug("未檢測到代理配置")
 
